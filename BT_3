@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+// Build the Contract
+contract StudentData {
+    // Create a structure for student details
+    struct Student {
+        int ID;
+        string fName;
+        string lName;
+        int marks; // Single integer for marks instead of an array
+    }
+
+    address owner;
+    int public stdCount = 0;
+    mapping(int => Student) public stdRecords;
+
+    // Modifier to allow only the owner to add records
+    modifier onlyOwner {
+        require(owner == msg.sender, "Only owner can add records");
+        _;
+    }
+
+    // Constructor to set the contract deployer as the owner
+    constructor() {
+        owner = msg.sender;
+    }
+
+    // Function to add new student records
+    function addNewRecords(int _ID, string memory _fName, string memory _lName, int _marks) public onlyOwner {
+        // Increase the student count
+        stdCount = stdCount + 1;
+
+        // Add the new student record to stdRecords mapping
+        stdRecords[stdCount] = Student(_ID, _fName, _lName, _marks);
+    }
+}
