@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-class UltraSimpleRAG:
+class SimpleRAG:
     def __init__(self):
         self.embeddings = OpenAIEmbeddings(openai_api_key=os.getenv("OPENAI_API_KEY"))
         self.connection_string = PGVector.connection_string_from_db_params(
@@ -18,10 +18,10 @@ class UltraSimpleRAG:
             user=os.getenv("POSTGRES_USER"),
             password=os.getenv("POSTGRES_PASSWORD"),
         )
-        self.collection_name = "document_chunks"  # Required for PGVector
+        self.collection_name = "document_embeddings"  # This creates your table automatically
     
     def implement_rag(self, file_path):
-        """Complete RAG implementation"""
+        """Complete RAG implementation - NO SQL commands!"""
         # Load document based on type
         if file_path.endswith('.pdf'):
             loader = PyPDFLoader(file_path)
@@ -44,7 +44,7 @@ class UltraSimpleRAG:
         )
         chunks = text_splitter.split_documents(documents)
         
-        # Create vector store with chunks
+        # This automatically creates the table and stores everything!
         vectorstore = PGVector.from_documents(
             documents=chunks,
             embedding=self.embeddings,
@@ -52,31 +52,73 @@ class UltraSimpleRAG:
             connection_string=self.connection_string,
         )
         
-        return {"status": "success", "chunks": len(chunks), "documents": len(documents)}
+        return {
+            "status": "success", 
+            "chunks": len(chunks), 
+            "documents": len(documents),
+            "file_name": os.path.basename(file_path),
+            "collection": self.collection_name
+        }
     
     def search(self, query, k=3):
-        """Search documents"""
+        """Search documents - NO SQL!"""
         vectorstore = PGVector(
             collection_name=self.collection_name,
             connection_string=self.connection_string,
             embedding_function=self.embeddings,
         )
         return vectorstore.similarity_search(query, k=k)
+    
+    def get_document_info(self):
+        """Get info about stored documents - using PGVector methods"""
+        vectorstore = PGVector(
+            collection_name=self.collection_name,
+            connection_string=self.connection_string,
+            embedding_function=self.embeddings,
+        )
+        
+        # Get all documents (you might need to adjust this based on your PGVector version)
+        try:
+            # This is a simplified approach - actual implementation may vary
+            results = vectorstore.similarity_search("", k=1000)  # Get many documents
+            files = {}
+            for doc in results:
+                filename = doc.metadata.get('source', 'unknown')
+                if filename not in files:
+                    files[filename] = 0
+                files[filename] += 1
+            
+            return files
+        except:
+            return {"info": "Use database client to view documents"}
 
 # Usage example
 if __name__ == "__main__":
-    rag = UltraSimpleRAG()
+    rag = SimpleRAG()
     
-    # Process a file
-    result = rag.implement_rag("sample.pdf")  # Change to your file path
-    print(f"✅ Processed {result['chunks']} chunks from {result['documents']} documents")
+    # Process a file - NO SQL commands!
+    result = rag.implement_rag("RCB_History_Upto_2025.pdf")  # Change to your file
     
-    # Search
-    results = rag.search("What is this document about?")
-    for i, doc in enumerate(results, 1):
-        print(f"\n--- Result {i} ---")
-        print(doc.page_content[:300] + "...")
-
+    if result["status"] == "success":
+        print(f"✅ Success! Created table '{result['collection']}' automatically")
+        print(f"📊 Processed {result['chunks']} chunks from {result['file_name']}")
+        
+        # Search - NO SQL!
+        print("\n🔍 Testing search...")
+        results = rag.search("RCB team history")
+        for i, doc in enumerate(results, 1):
+            print(f"\n--- Result {i} ---")
+            print(f"Source: {doc.metadata.get('source', 'Unknown')}")
+            print(f"Content: {doc.page_content[:200]}...")
+        
+        # Show info
+        print(f"\n📋 Documents in collection: {rag.collection_name}")
+        doc_info = rag.get_document_info()
+        for filename, count in doc_info.items():
+            print(f"  - {os.path.basename(filename)}: {count} chunks")
+    
+    else:
+        print(f"❌ Error: {result}")
 
 
 
@@ -91,3 +133,338 @@ unstructured==0.10.30
 pypdf==4.1.0
 pandas==2.1.4
 openpyxl==3.1.2
+
+
+
+import os
+import json
+import requests
+from datetime import datetime
+from langchain.tools import tool
+from dotenv import load_dotenv
+import psycopg2
+from pgvector.psycopg2 import register_vector
+from langchain_openai import OpenAIEmbeddings
+
+load_dotenv()
+
+# Initialize embeddings and DB connection once
+embeddings = OpenAIEmbeddings(openai_api_key=os.getenv("OPENAI_API_KEY"))
+conn = psycopg2.connect(
+    host=os.getenv("POSTGRES_HOST"),
+    port=os.getenv("POSTGRES_PORT"),
+    database=os.getenv("POSTGRES_DB"),
+    user=os.getenv("POSTGRES_USER"),
+    password=os.getenv("POSTGRES_PASSWORD")
+)
+register_vector(conn)
+
+# Storage files
+TODO_FILE = "todos.json"
+REMINDER_FILE = "reminders.json"
+
+def _load_json(file):
+    try:
+        with open(file, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+
+def _save_json(file, data):
+    with open(file, 'w') as f:
+        json.dump(data, f, indent=2)
+
+@tool
+def rag_search(query: str) -> str:
+    """Search through uploaded documents for relevant information."""
+    query_embedding = embeddings.embed_query(query)
+    with conn.cursor() as cur:
+        cur.execute("SELECT chunk_text, filename FROM document_chunks ORDER BY embedding <=> %s LIMIT 3", 
+                   (query_embedding, query_embedding))
+        results = cur.fetchall()
+    
+    if not results:
+        return "No relevant info found in documents."
+    
+    return "\n".join([f"📄 {filename}:\n{text[:300]}..." for text, filename in results])
+
+@tool
+def reminder_manager(action: str, text: str = "", id: int = 0) -> str:
+    """Create, list, or delete reminders. Actions: create, list, delete, complete."""
+    reminders = _load_json(REMINDER_FILE)
+    
+    if action == "create" and text:
+        new_reminder = {"id": len(reminders) + 1, "text": text, "completed": False}
+        reminders.append(new_reminder)
+        _save_json(REMINDER_FILE, reminders)
+        return f"✅ Reminder created: {text}"
+    
+    elif action == "list":
+        return "\n".join([f"{'✅' if r['completed'] else '⏰'} {r['id']}. {r['text']}" 
+                         for r in reminders]) or "No reminders."
+    
+    elif action == "delete" and id:
+        reminders = [r for r in reminders if r['id'] != id]
+        _save_json(REMINDER_FILE, reminders)
+        return f"✅ Reminder {id} deleted."
+    
+    elif action == "complete" and id:
+        for r in reminders:
+            if r['id'] == id: r['completed'] = True
+        _save_json(REMINDER_FILE, reminders)
+        return f"✅ Reminder {id} completed."
+
+@tool
+def todo_manager(action: str, task: str = "", id: int = 0) -> str:
+    """Manage to-do list: add, list, delete, complete tasks."""
+    todos = _load_json(TODO_FILE)
+    
+    if action == "add" and task:
+        new_task = {"id": len(todos) + 1, "task": task, "completed": False}
+        todos.append(new_task)
+        _save_json(TODO_FILE, todos)
+        return f"✅ Task added: {task}"
+    
+    elif action == "list":
+        pending = [f"⏳ {t['id']}. {t['task']}" for t in todos if not t['completed']]
+        completed = [f"✅ {t['id']}. {t['task']}" for t in todos if t['completed']]
+        return "\n".join(pending + completed) or "No tasks."
+    
+    elif action == "delete" and id:
+        todos = [t for t in todos if t['id'] != id]
+        _save_json(TODO_FILE, todos)
+        return f"✅ Task {id} deleted."
+    
+    elif action == "complete" and id:
+        for t in todos:
+            if t['id'] == id: t['completed'] = True
+        _save_json(TODO_FILE, todos)
+        return f"✅ Task {id} completed."
+
+@tool
+def weather_checker(city: str) -> str:
+    """Get current weather for any city."""
+    api_key = os.getenv("WEATHER_API_KEY")
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
+    
+    response = requests.get(url)
+    if response.status_code != 200:
+        return f"❌ Can't get weather for {city}"
+    
+    data = response.json()
+    return (f"🌤️ {data['name']}: {data['main']['temp']}°C, "
+            f"{data['weather'][0]['description'].title()}, "
+            f"Humidity: {data['main']['humidity']}%")
+
+@tool
+def web_search(query: str) -> str:
+    """Search the web for current information."""
+    return f"🔍 Web search for: {query}\n(Enable Google Search API for actual results)"
+
+@tool
+def greeting() -> str:
+    """Greet user based on current time."""
+    hour = datetime.now().hour
+    greeting_msg = "Good morning! ☀️" if 5 <= hour < 12 else \
+                  "Good afternoon! 🌤️" if 12 <= hour < 17 else \
+                  "Good evening! 🌙" if 17 <= hour < 21 else "Good night! 🌙"
+    return f"{greeting_msg} How can I assist you?"
+
+# Tool registry
+def get_all_tools():
+    """Return all tools for agent usage."""
+    return [rag_search, reminder_manager, todo_manager, weather_checker, web_search, greeting]
+
+# Quick test
+if __name__ == "__main__":
+    # Test tools
+    print(greeting())
+    print(weather_checker("London"))
+    print(todo_manager("add", "Finish AI project"))
+    print(todo_manager("list"))
+    print(reminder_manager("create", "Meeting at 3 PM"))
+    print(reminder_manager("list"))
+
+
+
+
+
+
+
+
+
+
+
+
+import os
+import json
+import requests
+from datetime import datetime
+from langchain.tools import tool
+from langchain.agents import initialize_agent
+from langchain_openai import ChatOpenAI
+from dotenv import load_dotenv
+import psycopg2
+from pgvector.psycopg2 import register_vector
+from langchain_openai import OpenAIEmbeddings
+
+load_dotenv()
+
+# ==================== TOOL DEFINITIONS ====================
+embeddings = OpenAIEmbeddings(openai_api_key=os.getenv("OPENAI_API_KEY"))
+conn = psycopg2.connect(
+    host=os.getenv("POSTGRES_HOST"), port=os.getenv("POSTGRES_PORT"),
+    database=os.getenv("POSTGRES_DB"), user=os.getenv("POSTGRES_USER"),
+    password=os.getenv("POSTGRES_PASSWORD")
+)
+register_vector(conn)
+
+TODO_FILE = "todos.json"
+REMINDER_FILE = "reminders.json"
+
+def _load_json(file):
+    try:
+        with open(file, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+
+def _save_json(file, data):
+    with open(file, 'w') as f:
+        json.dump(data, f, indent=2)
+
+@tool
+def rag_search(query: str) -> str:
+    """Search through uploaded documents for relevant information."""
+    query_embedding = embeddings.embed_query(query)
+    with conn.cursor() as cur:
+        cur.execute("SELECT chunk_text, filename FROM document_chunks ORDER BY embedding <=> %s LIMIT 3", 
+                   (query_embedding, query_embedding))
+        results = cur.fetchall()
+    return "\n".join([f"📄 {filename}:\n{text[:300]}..." for text, filename in results]) if results else "No relevant info found."
+
+@tool
+def reminder_manager(action: str, text: str = "", id: int = 0) -> str:
+    """Create, list, or delete reminders. Actions: create, list, delete, complete."""
+    reminders = _load_json(REMINDER_FILE)
+    
+    if action == "create" and text:
+        new_reminder = {"id": len(reminders) + 1, "text": text, "completed": False}
+        reminders.append(new_reminder)
+        _save_json(REMINDER_FILE, reminders)
+        return f"✅ Reminder created: {text}"
+    
+    elif action == "list":
+        return "\n".join([f"{'✅' if r['completed'] else '⏰'} {r['id']}. {r['text']}" for r in reminders]) or "No reminders."
+    
+    elif action == "delete" and id:
+        reminders = [r for r in reminders if r['id'] != id]
+        _save_json(REMINDER_FILE, reminders)
+        return f"✅ Reminder {id} deleted."
+    
+    return "Use: create <text> | list | delete <id> | complete <id>"
+
+@tool
+def todo_manager(action: str, task: str = "", id: int = 0) -> str:
+    """Manage to-do list: add, list, delete, complete tasks."""
+    todos = _load_json(TODO_FILE)
+    
+    if action == "add" and task:
+        new_task = {"id": len(todos) + 1, "task": task, "completed": False}
+        todos.append(new_task)
+        _save_json(TODO_FILE, todos)
+        return f"✅ Task added: {task}"
+    
+    elif action == "list":
+        pending = [f"⏳ {t['id']}. {t['task']}" for t in todos if not t['completed']]
+        completed = [f"✅ {t['id']}. {t['task']}" for t in todos if t['completed']]
+        return "\n".join(pending + completed) or "No tasks."
+    
+    elif action == "delete" and id:
+        todos = [t for t in todos if t['id'] != id]
+        _save_json(TODO_FILE, todos)
+        return f"✅ Task {id} deleted."
+    
+    return "Use: add <task> | list | delete <id> | complete <id>"
+
+@tool
+def weather_checker(city: str) -> str:
+    """Get current weather for any city."""
+    api_key = os.getenv("WEATHER_API_KEY")
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
+    
+    response = requests.get(url)
+    if response.status_code != 200:
+        return f"❌ Can't get weather for {city}"
+    
+    data = response.json()
+    return f"🌤️ {data['name']}: {data['main']['temp']}°C, {data['weather'][0]['description'].title()}"
+
+@tool
+def web_search(query: str) -> str:
+    """Search the web for current information."""
+    return f"🔍 Web search for: {query}\n(Enable Google Search API for actual results)"
+
+@tool
+def greeting() -> str:
+    """Greet user based on current time."""
+    hour = datetime.now().hour
+    greeting_msg = "Good morning! ☀️" if 5 <= hour < 12 else \
+                  "Good afternoon! 🌤️" if 12 <= hour < 17 else \
+                  "Good evening! 🌙" if 17 <= hour < 21 else "Good night! 🌙"
+    return f"{greeting_msg} How can I assist you?"
+
+# ==================== AGENT SETUP ====================
+def create_assistant():
+    """Create and return the smart assistant agent"""
+    llm = ChatOpenAI(
+        model="gpt-3.5-turbo",
+        temperature=0,
+        openai_api_key=os.getenv("OPENAI_API_KEY")
+    )
+    
+    tools = [rag_search, reminder_manager, todo_manager, weather_checker, web_search, greeting]
+    
+    agent = initialize_agent(
+        tools=tools,
+        llm=llm,
+        agent="zero-shot-react-description",
+        verbose=True,
+        handle_parsing_errors=True
+    )
+    
+    return agent
+
+# ==================== MAIN USAGE ====================
+if __name__ == "__main__":
+    # Create the assistant
+    assistant = create_assistant()
+    
+    print("🤖 Smart Personal Assistant Bot Started!")
+    print("=" * 50)
+    
+    # Test the assistant
+    test_queries = [
+        "Greet me",
+        "What's the weather in London?",
+        "Add 'Finish AI assignment' to my todo list",
+        "Show my todos",
+        "Search my documents for AI content"
+    ]
+    
+    for query in test_queries:
+        print(f"\n🧪 Query: {query}")
+        print("Response:", assistant.run(query))
+        print("-" * 30)
+    
+    # Interactive mode
+    print("\n💬 Interactive Mode - Type 'quit' to exit")
+    while True:
+        user_input = input("\nYou: ").strip()
+        if user_input.lower() in ['quit', 'exit', 'bye']:
+            break
+        try:
+            response = assistant.run(user_input)
+            print(f"Assistant: {response}")
+        except Exception as e:
+            print(f"Assistant: Sorry, I encountered an error: {e}")
