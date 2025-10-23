@@ -1,0 +1,93 @@
+import os
+from langchain_community.document_loaders import PyPDFLoader, TextLoader, CSVLoader, UnstructuredExcelLoader
+from langchain_community.vectorstores import PGVector
+from langchain_openai import OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class UltraSimpleRAG:
+    def __init__(self):
+        self.embeddings = OpenAIEmbeddings(openai_api_key=os.getenv("OPENAI_API_KEY"))
+        self.connection_string = PGVector.connection_string_from_db_params(
+            driver="psycopg2",
+            host=os.getenv("POSTGRES_HOST"),
+            port=os.getenv("POSTGRES_PORT"),
+            database=os.getenv("POSTGRES_DB"),
+            user=os.getenv("POSTGRES_USER"),
+            password=os.getenv("POSTGRES_PASSWORD"),
+        )
+        self.collection_name = "document_chunks"  # Required for PGVector
+    
+    def implement_rag(self, file_path):
+        """Complete RAG implementation"""
+        # Load document based on type
+        if file_path.endswith('.pdf'):
+            loader = PyPDFLoader(file_path)
+        elif file_path.endswith('.txt'):
+            loader = TextLoader(file_path, encoding='utf-8')
+        elif file_path.endswith('.csv'):
+            loader = CSVLoader(file_path)
+        elif file_path.endswith('.xlsx'):
+            loader = UnstructuredExcelLoader(file_path)
+        else:
+            raise ValueError(f"Unsupported file type: {file_path}")
+        
+        # Load documents
+        documents = loader.load()
+        
+        # Split documents into chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200
+        )
+        chunks = text_splitter.split_documents(documents)
+        
+        # Create vector store with chunks
+        vectorstore = PGVector.from_documents(
+            documents=chunks,
+            embedding=self.embeddings,
+            collection_name=self.collection_name,
+            connection_string=self.connection_string,
+        )
+        
+        return {"status": "success", "chunks": len(chunks), "documents": len(documents)}
+    
+    def search(self, query, k=3):
+        """Search documents"""
+        vectorstore = PGVector(
+            collection_name=self.collection_name,
+            connection_string=self.connection_string,
+            embedding_function=self.embeddings,
+        )
+        return vectorstore.similarity_search(query, k=k)
+
+# Usage example
+if __name__ == "__main__":
+    rag = UltraSimpleRAG()
+    
+    # Process a file
+    result = rag.implement_rag("sample.pdf")  # Change to your file path
+    print(f"✅ Processed {result['chunks']} chunks from {result['documents']} documents")
+    
+    # Search
+    results = rag.search("What is this document about?")
+    for i, doc in enumerate(results, 1):
+        print(f"\n--- Result {i} ---")
+        print(doc.page_content[:300] + "...")
+
+
+
+
+langchain==0.1.10
+langchain-community==0.0.20
+langchain-openai==0.0.8
+langchain-text-splitters==0.0.1
+pgvector==0.2.4
+psycopg2-binary==2.9.9
+python-dotenv==1.0.0
+unstructured==0.10.30
+pypdf==4.1.0
+pandas==2.1.4
+openpyxl==3.1.2
