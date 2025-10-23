@@ -396,4 +396,19 @@ class Orders(Base):
     order_datetime = Column(DateTime, default=datetime.utcnow)
     delivery_date = Column(DateTime, default=lambda: datetime.utcnow() + timedelta(days=5))
     product = relationship("Products", back_populates="orders")
+
     customer = relationship("Customers", back_populates="orders")
+
+
+
+
+# requirements.txt
+fastapi==0.104.1
+uvicorn==0.24.0
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+pydantic==2.5.0
+python-multipart==0.0.6
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+alembic==1.12.1
