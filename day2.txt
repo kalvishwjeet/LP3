@@ -121,7 +121,6 @@ if __name__ == "__main__":
         print(f"❌ Error: {result}")
 
 
-
 langchain==0.1.10
 langchain-community==0.0.20
 langchain-openai==0.0.8
