@@ -1,0 +1,399 @@
+# main.py
+from fastapi import FastAPI, Depends, HTTPException, status
+from pydantic import BaseModel
+from typing import List, Optional
+from sqlalchemy.orm import Session
+from datetime import datetime, timedelta
+from schemas import Customers, BaseAdmin, Products, Orders, SessionLocal, engine, Base
+
+app = FastAPI()
+Base.metadata.create_all(bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# --- Pydantic Schema ---
+class CustomerBase(BaseModel):
+    name: str
+    password: str
+
+class CustomerCreate(CustomerBase):
+    pass
+
+class CustomerUpdate(BaseModel):
+    name: Optional[str] = None
+    password: Optional[str] = None
+
+class CustomerOut(CustomerBase):
+    customer_id: int
+    
+    class Config:
+        orm_mode = True
+
+class AdminBase(BaseModel):
+    name: str
+    password: str
+
+class AdminCreate(AdminBase):
+    pass
+
+class AdminUpdate(BaseModel):
+    name: Optional[str] = None
+    password: Optional[str] = None
+
+class AdminOut(AdminBase):
+    admin_id: int
+    
+    class Config:
+        orm_mode = True
+
+class ProductBase(BaseModel):
+    admin_id: int
+    name: str
+    description: Optional[str] = None
+
+class ProductCreate(ProductBase):
+    pass
+
+class ProductUpdate(BaseModel):
+    admin_id: Optional[int] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+class ProductOut(ProductBase):
+    product_id: int
+    
+    class Config:
+        orm_mode = True
+
+class OrderBase(BaseModel):
+    product_id: int
+    customer_id: int
+
+class OrderCreate(OrderBase):
+    pass
+
+class OrderUpdate(BaseModel):
+    product_id: Optional[int] = None
+    status: Optional[str] = None
+
+class OrderOut(OrderBase):
+    order_id: int
+    status: str
+    order_datetime: datetime
+    delivery_date: datetime
+    
+    class Config:
+        orm_mode = True
+
+# --- CRUD Endpoints ---
+
+# Customer
+@app.get("/customers/", response_model=List[CustomerOut])
+def get_customers(db: Session = Depends(get_db)):
+    return db.query(Customers).all()
+
+@app.get("/customers/{customer_id}", response_model=CustomerOut)
+def get_customer(customer_id: int, db: Session = Depends(get_db)):
+    db_customer = db.query(Customers).get(customer_id)
+    if not db_customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return db_customer
+
+@app.post("/customers/", response_model=CustomerOut)
+def create_customer(customer: CustomerCreate, db: Session = Depends(get_db)):
+    print(customer)
+    db_customer = Customers(**customer.dict())
+    db.add(db_customer)
+    db.commit()
+    db.refresh(db_customer)
+    return db_customer
+
+@app.post("/customer_login/")
+def login_customer(username: str, password: str, db: Session = Depends(get_db)):
+    db_customer = db.query(Customers).filter(Customers.name == username).first()
+    if not db_customer:
+        raise HTTPException(status_code=404, detail="No username found")
+    
+    if db_customer.password != password:
+        raise HTTPException(status_code=401, detail="Password wrong")
+    
+    return {"message": "Login successful", "customer_id": db_customer.customer_id}
+
+@app.put("/customers/{customer_id}", response_model=CustomerOut)
+def update_customer(customer_id: int, customer: CustomerUpdate, db: Session = Depends(get_db)):
+    db_customer = db.query(Customers).get(customer_id)
+    if not db_customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    db_customer.name = customer.name
+    db_customer.password = customer.password
+    db.commit()
+    db.refresh(db_customer)
+    return db_customer
+
+@app.patch("/customers/{customer_id}", response_model=CustomerOut)
+def patch_customer(customer_id: int, customer: CustomerUpdate, db: Session = Depends(get_db)):
+    db_customer = db.query(Customers).get(customer_id)
+    if not db_customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    update_data = customer.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_customer, key, value)
+    
+    db.commit()
+    db.refresh(db_customer)
+    return db_customer
+
+@app.delete("/customers/{customer_id}", status_code=204)
+def delete_customer(customer_id: int, db: Session = Depends(get_db)):
+    db_customer = db.query(Customers).get(customer_id)
+    if not db_customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    
+    db.delete(db_customer)
+    db.commit()
+    return
+
+# Admin
+@app.post("/admins/", response_model=AdminOut)
+def create_admin(admin: AdminCreate, db: Session = Depends(get_db)):
+    db_admin = BaseAdmin(**admin.dict())
+    db.add(db_admin)
+    db.commit()
+    db.refresh(db_admin)
+    return db_admin
+
+@app.get("/admins/", response_model=List[AdminOut])
+def get_admins(db: Session = Depends(get_db)):
+    return db.query(BaseAdmin).all()
+
+@app.get("/admins/{admin_id}", response_model=AdminOut)
+def get_admin(admin_id: int, db: Session = Depends(get_db)):
+    db_admin = db.query(BaseAdmin).get(admin_id)
+    if not db_admin:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    return db_admin
+
+@app.put("/admins/{admin_id}", response_model=AdminOut)
+def update_admin(admin_id: int, admin: AdminUpdate, db: Session = Depends(get_db)):
+    db_admin = db.query(BaseAdmin).get(admin_id)
+    if not db_admin:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    
+    db_admin.name = admin.name
+    db_admin.password = admin.password
+    db.commit()
+    db.refresh(db_admin)
+    return db_admin
+
+@app.patch("/admins/{admin_id}", response_model=AdminOut)
+def patch_admin(admin_id: int, admin: AdminUpdate, db: Session = Depends(get_db)):
+    db_admin = db.query(BaseAdmin).get(admin_id)
+    if not db_admin:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    
+    update_data = admin.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_admin, key, value)
+    
+    db.commit()
+    db.refresh(db_admin)
+    return db_admin
+
+@app.delete("/admins/{admin_id}", status_code=204)
+def delete_admin(admin_id: int, db: Session = Depends(get_db)):
+    db_admin = db.query(BaseAdmin).get(admin_id)
+    if not db_admin:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    
+    db.delete(db_admin)
+    db.commit()
+    return
+
+# Product
+@app.post("/products/", response_model=ProductOut)
+def create_product(product: ProductCreate, db: Session = Depends(get_db)):
+    db_product = Products(**product.dict())
+    db.add(db_product)
+    db.commit()
+    db.refresh(db_product)
+    return db_product
+
+@app.get("/products/", response_model=List[ProductOut])
+def get_products(db: Session = Depends(get_db)):
+    return db.query(Products).all()
+
+@app.get("/products/{product_id}", response_model=ProductOut)
+def get_product(product_id: int, db: Session = Depends(get_db)):
+    db_product = db.query(Products).get(product_id)
+    if not db_product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return db_product
+
+@app.put("/products/{product_id}", response_model=ProductOut)
+def update_product(product_id: int, product: ProductUpdate, db: Session = Depends(get_db)):
+    db_product = db.query(Products).get(product_id)
+    if not db_product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    db_product.admin_id = product.admin_id
+    db_product.name = product.name
+    db_product.description = product.description
+    db.commit()
+    db.refresh(db_product)
+    return db_product
+
+@app.patch("/products/{product_id}", response_model=ProductOut)
+def patch_product(product_id: int, product: ProductUpdate, db: Session = Depends(get_db)):
+    db_product = db.query(Products).get(product_id)
+    if not db_product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    update_data = product.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_product, key, value)
+    
+    db.commit()
+    db.refresh(db_product)
+    return db_product
+
+@app.delete("/products/{product_id}", status_code=204)
+def delete_product(product_id: int, db: Session = Depends(get_db)):
+    db_product = db.query(Products).get(product_id)
+    if not db_product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    db.delete(db_product)
+    db.commit()
+    return
+
+# Order
+@app.post("/orders/", response_model=OrderOut)
+def create_order(order: OrderCreate, db: Session = Depends(get_db)):
+    order_datetime = datetime.utcnow()
+    delivery_date = order_datetime + timedelta(days=5)
+    db_order = Orders(
+        product_id=order.product_id,
+        customer_id=order.customer_id,
+        status="Processing",
+        order_datetime=order_datetime,
+        delivery_date=delivery_date
+    )
+    db.add(db_order)
+    db.commit()
+    db.refresh(db_order)
+    return db_order
+
+@app.get("/orders/", response_model=List[OrderOut])
+def get_orders(db: Session = Depends(get_db)):
+    return db.query(Orders).all()
+
+@app.get("/orders/{order_id}", response_model=OrderOut)
+def get_order(order_id: int, db: Session = Depends(get_db)):
+    db_order = db.query(Orders).get(order_id)
+    if not db_order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return db_order
+
+@app.put("/orders/{order_id}", response_model=OrderOut)
+def update_order(order_id: int, order: OrderUpdate, db: Session = Depends(get_db)):
+    db_order = db.query(Orders).get(order_id)
+    if not db_order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    db_order.status = order.status
+    db.commit()
+    db.refresh(db_order)
+    return db_order
+
+@app.patch("/orders/{order_id}", response_model=OrderOut)
+def patch_order(order_id: int, order: OrderUpdate, db: Session = Depends(get_db)):
+    db_order = db.query(Orders).get(order_id)
+    if not db_order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    update_data = order.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_order, key, value)
+    
+    db.commit()
+    db.refresh(db_order)
+    return db_order
+
+@app.delete("/orders/{order_id}", status_code=204)
+def delete_order(order_id: int, db: Session = Depends(get_db)):
+    db_order = db.query(Orders).get(order_id)
+    if not db_order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    db.delete(db_order)
+    db.commit()
+    return
+
+
+
+
+
+
+
+# schemas.py
+from datetime import datetime, timedelta
+from enum import Enum
+from sqlalchemy import (create_engine, Column, Integer, String, DateTime,
+                        Enum as SqlEnum, ForeignKey, Text)
+from sqlalchemy.orm import relationship, declarative_base, sessionmaker
+
+SQLALCHEMY_DATABASE_URL = "postgresql://mytuser:mypassword@localhost:5432/myapp"
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
+Base = declarative_base()
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+class DeliveryStatus(str, Enum):
+    processing = "Processing"
+    shipped = "Shipped"
+    delivered = "Delivered"
+
+
+class Customers(Base):
+    __tablename__ = "customers"
+    customer_id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    password = Column(String(255), nullable=False)
+    orders = relationship("Orders", back_populates="customer")
+
+
+class BaseAdmin(Base):
+    __tablename__ = "admins"
+    admin_id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    password = Column(String(255), nullable=False)
+    products = relationship("Products", back_populates="admin")
+
+
+class Products(Base):
+    __tablename__ = "products"
+    product_id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admins.admin_id"), nullable=False)
+    name = Column(String(100), nullable=False)
+    description = Column(Text)
+    admin = relationship("BaseAdmin", back_populates="products")
+    orders = relationship("Orders", back_populates="product")
+
+
+class Orders(Base):
+    __tablename__ = "orders"
+    order_id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.product_id"), nullable=False)
+    customer_id = Column(Integer, ForeignKey("customers.customer_id"), nullable=False)
+    status = Column(SqlEnum(DeliveryStatus), default=DeliveryStatus.processing)
+    order_datetime = Column(DateTime, default=datetime.utcnow)
+    delivery_date = Column(DateTime, default=lambda: datetime.utcnow() + timedelta(days=5))
+    product = relationship("Products", back_populates="orders")
+    customer = relationship("Customers", back_populates="orders")
